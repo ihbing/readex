@@ -76,7 +76,6 @@ static int check_sha1(void)
 
 static void process_dex_header(FILE *dex)
 {	
-	int i;
 	uint32_t adler;
 
 	if(dex == NULL){
@@ -233,7 +232,6 @@ static void free_str_ids(void)
 static void process_string_ids(FILE *dex)
 {
 	int i;
-	char *str;
 	if(dex == NULL){
 		fprintf(stderr, "process_string_ids - invalid FILE parameter.\n");
 		return ;
@@ -482,12 +480,8 @@ static int process_method_paras(FILE *dex, char *buffer, size_t len, int offset)
 
 static char *process_method_item(FILE *dex, MethodIds *method, int has_class_name)
 {
-	int cnt = 0;
-	int array_depth = 0;
-	int str_idx = 0;
 	int idx;
-	char *str;
-	char type;
+	int cnt = 0;
 	static char buffer[BUFFLEN];
 
 	// process method return type
@@ -673,8 +667,6 @@ static char *_get_access_flags(int flags, int type)
 
 static char *get_access_flags(ClassDefs *class, int type)
 {
-	int i;
-	int cnt = 0;
 	int flags;
 	if(class == NULL){
 		fprintf(stderr, "get_class_name - invalid ClassDefs parameter.\n");
@@ -683,7 +675,7 @@ static char *get_access_flags(ClassDefs *class, int type)
 
 	flags = class->access_flags;
 
-	if(flags & access_flags_mask == 0)
+	if((flags & access_flags_mask) == 0)
 		return NULL;
 	return _get_access_flags(flags, type);
 }
@@ -758,7 +750,7 @@ static char *process_source_idx(ClassDefs *class)
 
 static char *process_annotation(FILE *dex, ClassDefs *class)
 {
-
+	return NULL;
 }
 
 static char *process_encode_field(int idx, int flags)
@@ -791,7 +783,7 @@ static char *process_class_data(FILE *dex, ClassDefs *class)
 {
 	static char buffer[BUFFLEN];
 	ClassData class_data;
-	int offset;
+	unsigned int offset;
 	int idx_diff = 0;
 	int cnt = 0;
 	int access_flags;
@@ -913,8 +905,6 @@ static void process_class_items(FILE *dex, ClassDefs *class)
 
 static void process_class_type(FILE *dex)
 {
-	int i;
-
 	if(dex == NULL){
 		fprintf(stderr, "process_class_type - invalid FILE dex parameter.\n");
 		return ;
@@ -969,7 +959,6 @@ int main(int argc, char **argv)
 {
 #ifndef __TEST__
 	FILE *dex;
-	int res;
 	// print basic program prompt information
 	printf("\n=== %s %s ===\n\n", PROGRAM_NAME, PROGRAM_VER);
 
@@ -991,8 +980,9 @@ int main(int argc, char **argv)
 	process_type_ids(dex);
 	process_proto_ids(dex);
 	process_method_ids(dex);
+	//process_annotation(dex);
 	process_class_type(dex);
-	//process_field_ids(dex);
+	process_field_ids(dex);
 #elif
 	ret_type_test();
 #endif

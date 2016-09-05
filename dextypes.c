@@ -12,7 +12,6 @@ int readUnsignedLeb128(FILE *file, u4 *offset)
 
 	u1 uleb;
     int result;
-    int cnt = 0;
 	if(fseek(file, *offset, SEEK_SET)){
 		fprintf(stderr, "readUnsignedLeb128 - fseek %u failure.\n", *offset);
 		exit(EXIT_FAILURE);

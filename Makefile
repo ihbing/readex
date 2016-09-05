@@ -1,6 +1,6 @@
 OBJECTS = readex.o dextypes.o utils.o
 CC = gcc
-FLAG = -c -g
+FLAG = -Wall -c -O2 
 
 readex: $(OBJECTS)
 	$(CC) -o readex $(OBJECTS)
