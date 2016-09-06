@@ -3,7 +3,8 @@ It's a simple dex file format parser.
 
 ```
 > make test
- 
+
+> $./readex Hello.dex
 === readex 0.01 ===
 
 Dex Header:
