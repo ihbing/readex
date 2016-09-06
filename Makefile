@@ -1,6 +1,7 @@
 OBJECTS = readex.o dextypes.o utils.o
 CC = gcc
 FLAG = -Wall -c -O2 
+#FLAG = -g -c
 
 readex: $(OBJECTS)
 	$(CC) -o readex $(OBJECTS)
@@ -17,7 +18,3 @@ utils.o: utils.c
 .PHONY: clean
 clean:
 	rm -f $(OBJECTS) readex
-
-.PHONY: test
-test: readex
-	./readex Hello.dex

@@ -1,6 +1,9 @@
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
+#include <getopt.h>
+#include <unistd.h>
 #include "dex.h"
 #include "utils.h"
 
@@ -17,12 +20,11 @@
 
 static int do_dex_header = 0;
 static int do_string_ids = 0;
-static int do_type_ids = 0;
-static int do_proto_ids = 0;
-static int do_field_ids = 0;
 static int do_method_ids = 0;
 static int do_class_defs = 0;
+static int do_help = 0;
 
+static char *class_name = NULL;
 static DexHeader *dex_header = NULL;
 static StringIdItem *str_item = NULL;
 static TypeIdIndex *type_ids = NULL;
@@ -31,6 +33,7 @@ static FieldIds *field_ids = NULL;
 static MethodIds *method_ids = NULL;
 static ClassDefs *class_defs = NULL;
 static char **str_ids = NULL;
+static FILE *dex = NULL;
 
 static int access_flags_mask = ACC_PUBLIC | ACC_PRIVATE | ACC_PROTECTED | ACC_STATIC | ACC_FINAL 
 								| ACC_SYNCHRONIZED | ACC_SUPER | ACC_VOLATILE | ACC_BRIDGE | ACC_TRANSIENT
@@ -61,12 +64,44 @@ static AccessFlags afs[] = {
 	{0, 0, 0},
 };
 
+static void usage(void);
 static void print_header_info(DexHeader *dex_header);
+static int check_sha1(void);
+static void process_dex_header(void);
+static char *process_string_items(u4 offset);
+static void free_str_ids(void);
+static void process_string_ids(void);
+static void process_type_ids(void);
+static int process_type(char *buffer, size_t len, u4 idx);
+static int process_method_paras(char *buffer, size_t len, int offset);
+static char *process_method_item(MethodIds *method, int has_class_name);
+static void process_proto_ids(void);
+static char *process_field_item(u4 idx, int has_class_name);
+static void process_field_ids(void);
+static void process_method_ids(int has_class_name);
+static char *_get_class_name(u4 idx);
+static char *get_class_name(ClassDefs *class);
+static char *_get_access_flags(int flags, int type);
+static char *get_access_flags(ClassDefs *class, int type);
+static char *get_super_name(ClassDefs *class);
+static char *get_interfaces(ClassDefs *class);
+static char *process_source_idx(ClassDefs *class);
+static char *process_annotation(ClassDefs *class);
+static char *process_class_data(ClassDefs *class);
+static void process_class_items(ClassDefs *class);
+static void process_class_type(void);
+static void parse_args(int argc, char **argv);
+static void process_file(const char *file);
 
 static void usage(void)
 {
-	fprintf(stderr, "Usage: %s <option(s)> dex-file(s)\n", PROGRAM_NAME);
-	fprintf(stderr, "Display information about the contents of DEX format files.\n");
+	puts(" Usage: readex -[mCHhs] [-c class_name] dex_file_name");
+	puts(" \t-m, --method                                show all methods' information in dex file.");
+	puts(" \t-C, --Class                                 show all classes' information in dex file.");
+	puts(" \t-c [class name], --class [class name]       show specific class's information in dex file.");
+	puts(" \t-H, --header                                show header information in dex file.");
+	puts(" \t-s, --strings                               show all strings in dex file.");
+	puts(" \t-h, --help                                  show this message.");
 }
 
 static int check_sha1(void)
@@ -74,14 +109,9 @@ static int check_sha1(void)
 	return 0;
 }
 
-static void process_dex_header(FILE *dex)
+static void process_dex_header(void)
 {	
 	uint32_t adler;
-
-	if(dex == NULL){
-		fprintf(stderr, "process_dex_header - invalid FILE dex parameter.\n");
-		return ;
-	}
 
 	fseek(dex, OFFSETOF(DexHeader, signature), SEEK_SET);
 
@@ -159,12 +189,15 @@ static void print_header_info(DexHeader *dex_header)
 	printf(" Data Offset:               %8X(%d)\n", dex_header->dataOff, dex_header->dataOff);
 }
 
-static char *process_string_items(FILE *dex, u4 offset)
+static char *process_string_items(u4 offset)
 {
 	char *buffer, *buffer_back;
 	int i, j;
 	int str_len;
 	int newline = 0;
+
+	if(dex_header == NULL)
+		process_dex_header();
 
 	str_len = readUnsignedLeb128(dex, &offset);
 
@@ -222,6 +255,9 @@ static void free_str_ids(void)
 {
 	int i;
 	if(str_ids != NULL){
+		if(dex_header == NULL)
+			process_dex_header();
+
 		for(i = 0; i < dex_header->stringIdsSize; ++i){
 			free(str_ids[i]);
 		}
@@ -229,21 +265,15 @@ static void free_str_ids(void)
 	}
 }
 
-static void process_string_ids(FILE *dex)
+static void process_string_ids(void)
 {
 	int i;
-	if(dex == NULL){
-		fprintf(stderr, "process_string_ids - invalid FILE parameter.\n");
-		return ;
-	}
-
 	if(dex_header == NULL){
-		process_dex_header(dex);
+		process_dex_header();
 	}
 
 	if(str_ids != NULL){
 		free_str_ids();
-		str_ids = NULL;
 	}
 
 	str_ids = (char **)malloc(sizeof(char *) * dex_header->stringIdsSize);
@@ -260,27 +290,21 @@ static void process_string_ids(FILE *dex)
 		}
 	}
 
-	if(do_string_ids){
-		printf("Strings:\n");
-	}
+	for(i = 0; i < dex_header->stringIdsSize; ++i)
+		str_ids[i] = process_string_items(str_item[i].string_data_off);
 
-	for(i = 0; i < dex_header->stringIdsSize; ++i){
-		str_ids[i] = process_string_items(dex, str_item[i].string_data_off);
-		if(do_string_ids)
+	if(do_string_ids){
+		puts("Strings:");
+		for(i = 0; i < dex_header->stringIdsSize; ++i){
 			printf(" %2d(%8X):       \"%s\"\n", i, str_item[i].string_data_off, str_ids[i] == NULL ? "null" : str_ids[i]);
+		}
 	}
 }
 
-static void process_type_ids(FILE *dex)
+static void process_type_ids(void)
 {
-	int i;
-	if(dex == NULL){
-		fprintf(stderr, "process_type_ids - invalid FILE dex parameter.\n");
-		return ;
-	}
-
 	if(dex_header == NULL){
-		process_dex_header(dex);
+		process_dex_header();
 	}
 
 	if(type_ids == NULL){
@@ -290,7 +314,7 @@ static void process_type_ids(FILE *dex)
 			return ;
 		}
 	}
-
+#if 0
 	if(do_type_ids){
 		if(str_ids == NULL){
 			process_string_ids(dex);
@@ -300,6 +324,7 @@ static void process_type_ids(FILE *dex)
 			printf(" %2d(idx: %4d)        %s\n", i, type_ids[i].descriptor_idx, str_ids[type_ids[i].descriptor_idx]);
 		}
 	}
+#endif
 
 }
 
@@ -347,6 +372,14 @@ static int check_return_idx(MethodIds *method)
 	int idx;	
 	if(method == NULL)
 		return -1;
+
+	if(dex_header == NULL)
+		process_dex_header();
+	if(proto_ids == NULL)
+		process_proto_ids();
+	if(type_ids == NULL)
+		process_type_ids();
+
 	idx = method->proto_idx;
 	if(idx > dex_header->protoIdsSize){
 		return -1;
@@ -373,6 +406,10 @@ static int process_type(char *buffer, size_t len, u4 idx)
 	int cnt = 0;
 	int str_idx = 0;
 	int array_depth = 0;
+
+
+	if(str_ids == NULL)
+		process_string_ids();
 
 	if(str_ids[idx][str_idx] == '['){
 		// array
@@ -415,13 +452,16 @@ static int check_name_idx(MethodIds *method)
 		return -1;
 	}
 
+	if(dex_header == NULL)
+		process_dex_header();
+
 	idx = method->name_idx;
 	if(idx > dex_header->stringIdsSize)
 		return -1;
 	return idx;
 }
 
-static int _get_type_list(FILE *dex, char *buffer, size_t len, int offset)
+static int _get_type_list(char *buffer, size_t len, int offset)
 {
 	int i;
 	int cnt = 0;
@@ -439,6 +479,9 @@ static int _get_type_list(FILE *dex, char *buffer, size_t len, int offset)
 	if(tl.size == 0)
 		return 0;
 
+	if(type_ids == NULL)
+		process_type_ids();
+
 	tl.type_items = (TypeListItem *)get_data(NULL, offset+sizeof(tl.size), sizeof(TypeListItem), tl.size, dex);
 	if(tl.type_items == NULL){
 		fprintf(stderr, "_get_type_list - get data type list failure.\n");
@@ -455,19 +498,19 @@ static int _get_type_list(FILE *dex, char *buffer, size_t len, int offset)
 	return cnt;
 }
 
-static int process_method_paras(FILE *dex, char *buffer, size_t len, int offset)
+static int process_method_paras(char *buffer, size_t len, int offset)
 {
 	int cnt = 0;
 	int ret;
 
-	if(dex == NULL || buffer == NULL){
-		fprintf(stderr, "process_method_paras - invalid FILE dex and/or buffer parameter.\n");
+	if(buffer == NULL){
+		fprintf(stderr, "process_method_paras - invalid buffer parameter.\n");
 		return -1;
 	}
 
 	cnt += snprintf(buffer+cnt, len-cnt, "(");
 
-	if((ret = _get_type_list(dex, buffer+cnt, len-cnt, offset)) == -1){
+	if((ret = _get_type_list(buffer+cnt, len-cnt, offset)) == -1){
 		fprintf(stderr, "process_method_paras - get type list failure.\n");
 		return -1;
 	}
@@ -478,11 +521,16 @@ static int process_method_paras(FILE *dex, char *buffer, size_t len, int offset)
 	return cnt;	
 }
 
-static char *process_method_item(FILE *dex, MethodIds *method, int has_class_name)
+static char *process_method_item(MethodIds *method, int has_class_name)
 {
 	int idx;
 	int cnt = 0;
 	static char buffer[BUFFLEN];
+
+	if(method == NULL){
+		fprintf(stderr, "process_method_item - invalid method argument.\n");
+		return NULL;
+	}
 
 	// process method return type
 	if((idx = check_return_idx(method)) == -1){
@@ -491,18 +539,28 @@ static char *process_method_item(FILE *dex, MethodIds *method, int has_class_nam
 	}
 	cnt = process_type(buffer, BUFFLEN, idx);
 
+	if(has_class_name){
+		if(class_defs == NULL)
+			process_class_type();
+		cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "%s->", get_class_name(&class_defs[method->class_idx]));
+	}
+
 	// process method name
 	if((idx = check_name_idx(method)) == -1){
 		fprintf(stderr, "process_method_item - invalid method return type index '%d'.\n", method->name_idx);
 		return NULL;
 	}
+	if(str_ids == NULL)
+		process_string_ids();
 	cnt += snprintf(buffer+cnt, BUFFLEN-cnt, " %s", str_ids[method->name_idx]);
 
 	// process method parameters
 	// the proto index has been checked.
 	// if parameters_off equal to 0, means no parameter.
+	if(proto_ids == NULL)
+		process_proto_ids();
 	if(proto_ids[method->proto_idx].parameters_off != 0)
-		cnt += process_method_paras(dex, buffer+cnt, BUFFLEN-cnt, proto_ids[method->proto_idx].parameters_off);
+		cnt += process_method_paras(buffer+cnt, BUFFLEN-cnt, proto_ids[method->proto_idx].parameters_off);
 	else
 		cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "()\n");
 
@@ -512,19 +570,13 @@ static char *process_method_item(FILE *dex, MethodIds *method, int has_class_nam
 
 #endif
 
-	printf("%s", buffer);
 	return buffer;
 }
 
-static void process_proto_ids(FILE *dex)
+static void process_proto_ids(void)
 {
-	if(dex == NULL){
-		fprintf(stderr, "process_proto_ids - invalid FILE dex parameter.\n");
-		return ;
-	}
-
 	if(dex_header == NULL){
-		process_dex_header(dex);
+		process_dex_header();
 	}
 
 	if(proto_ids == NULL){
@@ -541,6 +593,11 @@ static char *process_field_item(u4 idx, int has_class_name)
 	static char buffer[BUFFLEN];
 	int cnt = 0;
 	//skip the class name
+
+	if(dex_header == NULL)
+		process_dex_header();
+	if(type_ids == NULL)
+		process_type_ids();
 
 	// check if the idx is valid
 	if(field_ids[idx].type_idx > dex_header->typeIdsSize){
@@ -560,16 +617,10 @@ static char *process_field_item(u4 idx, int has_class_name)
 	return buffer;
 }
 
-static void process_field_ids(FILE *dex)
+static void process_field_ids(void)
 {
-	int i;
-	if(dex == NULL){
-		fprintf(stderr, "process_field_ids - invalid FILE dex parameter.\n");
-		return ;
-	}
-
 	if(dex_header == NULL){
-		process_dex_header(dex);
+		process_dex_header();
 	}
 
 	if(field_ids == NULL){
@@ -580,21 +631,19 @@ static void process_field_ids(FILE *dex)
 		}
 	}
 
+#if 0
 	puts("Field:");
 	for(i = 0; i < dex_header->fieldIdsSize; ++i)
 		printf("%s\n", process_field_item(i, 0));
+#endif
 }
 
-static void process_method_ids(FILE *dex)
+static void process_method_ids(int has_class_name)
 {
 	int i;
-	if(dex == NULL){
-		fprintf(stderr, "process_method_ids - invalid FILE dex parameter.\n");
-		return ;
-	}
 
 	if(dex_header == NULL){
-		process_dex_header(dex);
+		process_dex_header();
 	}
 
 	if(method_ids == NULL){
@@ -604,15 +653,21 @@ static void process_method_ids(FILE *dex)
 			return ;
 		}
 	}
-	puts("Methods:");
-	for(i = 0; i < dex_header->methodIdsSize; ++i)
-		process_method_item(dex, &method_ids[i], 0);
+	if(do_method_ids){
+		puts("Methods:");
+		for(i = 0; i < dex_header->methodIdsSize; ++i)
+			printf("%s", process_method_item(&method_ids[i], has_class_name));
+	}
 }
 
 static char *_get_class_name(u4 idx)
 {
 	// argument idx is the index of type.
 	static char buffer[BUFFLEN];
+	if(type_ids == NULL)
+		process_type_ids();
+	if(str_ids == NULL)
+		process_string_ids();
 	// check if the type is class type.
 	if(str_ids[type_ids[idx].descriptor_idx][0] != 'L'){
 		fprintf(stderr, "_get_class_name - type '%c' is not class type.\n", str_ids[type_ids[idx].descriptor_idx][0]);
@@ -632,6 +687,9 @@ static char *get_class_name(ClassDefs *class)
 		fprintf(stderr, "get_class_name - invalid ClassDefs parameter.\n");
 		return NULL;
 	}
+
+	if(dex_header == NULL)
+		process_dex_header();
 
 	if(class->class_idx > dex_header->typeIdsSize){
 		fprintf(stderr, "get_class_name - invalid class index %d.\n", class->class_idx);
@@ -692,7 +750,7 @@ static char *get_super_name(ClassDefs *class)
 	return _get_class_name(class->superclass_idx);
 }
 
-static char *get_interfaces(FILE *dex, ClassDefs *class)
+static char *get_interfaces(ClassDefs *class)
 {
 	int i;
 	TypeList tl;
@@ -744,11 +802,13 @@ static char *process_source_idx(ClassDefs *class)
 	if(class->source_file_idx == NO_INDEX){
 		return NULL;
 	}
+	if(str_ids == NULL)
+		process_string_ids();
 
 	return str_ids[class->source_file_idx];
 }
 
-static char *process_annotation(FILE *dex, ClassDefs *class)
+static char *process_annotation(ClassDefs *class)
 {
 	return NULL;
 }
@@ -766,20 +826,22 @@ static char *process_encode_field(int idx, int flags)
 	
 }
 
-static char *process_encode_method(FILE *dex, int idx, int flags, int code_off)
+static char *process_encode_method(int idx, int flags, int code_off)
 {
 	int cnt = 0;
 	static char buffer[BUFFLEN];
+	if(method_ids == NULL)
+		process_method_ids(0);
 
 	//char *process_method_item(FILE *dex, MethodIds *method, int has_class_name)
 	cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "%s", _get_access_flags(flags, METHOD));
 
-	cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "%s", process_method_item(dex, &method_ids[idx], 0));
+	cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "%s", process_method_item(&method_ids[idx], 0));
 
 	return buffer;
 }
 
-static char *process_class_data(FILE *dex, ClassDefs *class)
+static char *process_class_data(ClassDefs *class)
 {
 	static char buffer[BUFFLEN];
 	ClassData class_data;
@@ -790,9 +852,8 @@ static char *process_class_data(FILE *dex, ClassDefs *class)
 	int code_off;
 	int i;
 
-
-	if(dex == NULL || class == NULL){
-		fprintf(stderr, "process_class_data - invalid FILE dex or ClassDefs class parameter.\n");
+	if(class == NULL){
+		fprintf(stderr, "process_class_data - invalid ClassDefs class parameter.\n");
 		return NULL;
 	}
 
@@ -817,101 +878,98 @@ static char *process_class_data(FILE *dex, ClassDefs *class)
 
 	// static field
 	if(class_data.static_fields_size != 0){
-		cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "Static Field:\n");
+		cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "  Static Field:\n");
 		for(i = 0; i < class_data.static_fields_size; ++i){
 			idx_diff += readUnsignedLeb128(dex, &offset);
 			access_flags = readUnsignedLeb128(dex, &offset);
-			cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "%s", process_encode_field(idx_diff, access_flags));
+			cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "    %s", process_encode_field(idx_diff, access_flags));
 		}
 	}
 
 	// instance field
 	if(class_data.instance_fields_size != 0){
 		idx_diff = 0;
-		cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "Instance Field:\n");
+		cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "  Instance Field:\n");
 		for(i = 0; i < class_data.instance_fields_size; ++i){
 			idx_diff += readUnsignedLeb128(dex, &offset);
 			access_flags = readUnsignedLeb128(dex, &offset);
-			cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "%s", process_encode_field(idx_diff, access_flags));
+			cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "    %s", process_encode_field(idx_diff, access_flags));
 		}
 	}
 
 	// direct method
 	if(class_data.direct_methods_size != 0){
 		idx_diff = 0;
-		cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "Direct Method:\n");
+		cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "  Direct Method:\n");
 		for(i = 0; i < class_data.direct_methods_size; ++i){
 			idx_diff += readUnsignedLeb128(dex, &offset);
 			access_flags = readUnsignedLeb128(dex, &offset);
 			code_off = readUnsignedLeb128(dex, &offset);
-			cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "%s", process_encode_method(dex, idx_diff, access_flags, code_off));
+			cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "    %s", process_encode_method(idx_diff, access_flags, code_off));
 		}
 	}
 
 	// virtual method
 	if(class_data.virtual_methods_size != 0){
 		idx_diff = 0;
-		cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "Virtual Method:\n");
+		cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "  Virtual Method:\n");
 		for(i = 0; i < class_data.direct_methods_size; ++i){
 			idx_diff += readUnsignedLeb128(dex, &offset);
 			access_flags = readUnsignedLeb128(dex, &offset);
 			code_off = readUnsignedLeb128(dex, &offset);
-			cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "%s", process_encode_method(dex, idx_diff, access_flags, code_off));
+			cnt += snprintf(buffer+cnt, BUFFLEN-cnt, "    %s", process_encode_method(idx_diff, access_flags, code_off));
 		}
 	}
 
-	printf("%s", buffer);
-
-	return NULL;
+	return buffer;
 }
 
-static void process_class_items(FILE *dex, ClassDefs *class)
+static void process_class_items(ClassDefs *class)
 {
 	char *name;
 	char *flag;
 	char *super;
 	char *interfaces;
 	char *src;
+	char *class_data;
 	//process class name
 	// check class name index is invalid or not.
-	if(dex == NULL || class == NULL){
-		fprintf(stderr, "process_class_items - invalid FILE dex or ClassDefs parameter.\n");
+	if(class == NULL){
+		fprintf(stderr, "process_class_items - invalid ClassDefs parameter.\n");
 		return ;
 	}
 	name = get_class_name(class);
 	if(name != NULL)
-		printf("name: %s\n", name);
+		printf(" name: %s\n", name);
 
 	flag = get_access_flags(class, CLASS);
 	if(flag != NULL)
-		printf("flag: %s\n", flag);
+		printf(" flag: %s\n", flag);
 
 	super = get_super_name(class);
 	if(super != NULL){
-		printf("super: %s\n", super);
+		printf(" super: %s\n", super);
 	}
 
-	interfaces = get_interfaces(dex, class);
+	interfaces = get_interfaces(class);
 	if(interfaces != NULL){
-		printf("interface: %s\n", interfaces);
+		printf(" interface: %s\n", interfaces);
 	}
 	src = process_source_idx(class);
 	if(src != NULL){
-		printf("source: %s\n", src);
+		printf(" source: %s\n", src);
 	}
 
-	process_class_data(dex, class);
+	class_data = process_class_data(class);
+	if(class_data != NULL)
+		printf(" class data: \n%s", class_data);
 }
 
-static void process_class_type(FILE *dex)
+static void process_class_type(void)
 {
-	if(dex == NULL){
-		fprintf(stderr, "process_class_type - invalid FILE dex parameter.\n");
-		return ;
-	}
-
+	int i;
 	if(dex_header == NULL){
-		process_dex_header(dex);
+		process_dex_header();
 	}
 
 	if(class_defs == NULL){
@@ -922,45 +980,143 @@ static void process_class_type(FILE *dex)
 		}
 	}
 
+	if(do_class_defs){
+		if(class_name != NULL){
+			for(i = 0; i < dex_header->classDefsSize; ++i){
+				if(strcmp(class_name, get_class_name(&class_defs[i])) == 0)
+					break;
+			}
+			if(i == dex_header->classDefsSize){
+				fprintf(stderr, "process_class_type - not found class '%s'.\n", class_name);
+				return ;
+			}
+			process_class_items(&class_defs[i]);
+			class_name = NULL;
+		}else{
+			for(i = 0; i < dex_header->classDefsSize; ++i){
+				printf("Class %d:\n", i);
+				process_class_items(&class_defs[i]);
+			}
+		}
+	}
+#if 0
 	puts("Class:");
 	process_class_items(dex, &class_defs[0]);
+#endif
 }
 
-void ret_type_test(void)
+static void parse_args(int argc, char **argv)
 {
-	// return type test
-	int i;
-	char **backup = NULL;
-	char buffer[1024];
-
-	if(str_ids != NULL)
-		backup = str_ids;
-
-	str_ids = (char **)malloc(sizeof(char *) * 7);
-
-	str_ids[0] = "[I";
-	str_ids[1] = "[Ljava/lang/string;";
-	str_ids[2] = "[[I";
-	str_ids[3] = "V";
-	str_ids[4] = "Z";
-	str_ids[5] = "[[V";
-	str_ids[6] = "Ljava/lang/string;";
-
-	for(i = 0; i < 7; ++i){
-		process_type(buffer, 1024, i);
-		printf("%d: %s\n", i, buffer);
+	int c;
+	static struct option opts[] = {
+		{"method", 0, NULL, 'm'},
+		{"class", 1, NULL, 'c'},
+		{"Class", 0, NULL, 'C'},
+		{"header", 0, NULL, 'H'},
+		{"strings", 0, NULL, 's'},
+		{"help", 0, NULL, 'h'},
+		{"all", 0, NULL, 'a'},
+		{0, 0, 0, 0},
+	};	
+	static const char *const short_options = "mc:CHsh";
+	while((c = getopt_long(argc, argv, short_options, opts, NULL)) != -1){
+		switch(c){
+			case 'm':
+				do_method_ids = 1;	
+				break;
+			case 'c':
+				do_class_defs = 1;
+				class_name = optarg;
+				puts(class_name);
+				break;
+			case 'C':
+				do_class_defs = 1;
+				break;
+			case 'H':
+				do_dex_header = 1;
+				break;
+			case 's':
+				do_string_ids = 1;
+				break;
+			case 'h':
+				do_help = 1;
+				break;
+			case 'a':
+				do_dex_header = 1;
+				do_string_ids = 1;
+				do_class_defs = 1;
+				break;
+			default:	
+				// get invalid opt will print usage and exit.
+				do_help = 1;
+		}
 	}
 
-	if(backup != NULL)
-		str_ids = backup;
+	if(optind == 1){
+		// no options
+		do_dex_header = 1;
+		do_string_ids = 1;
+		do_class_defs = 1;
+	}
+
+	if(optind >= argc){
+		usage();
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void process_file(const char *file)
+{
+	struct stat st;
+	if(file == NULL)
+		return ;
+	if(stat(file, &st) == -1){
+		fprintf(stderr, "stat file '%s' failure.\n", file);
+		return ;
+	}
+
+	if(!S_ISREG(st.st_mode)){
+		fprintf(stderr, "%s is not a regular file.\n", file);
+		return ;
+	}
+
+	dex = fopen(file, "rb");
+	if(dex == NULL){
+		perror("open file failre: ");
+		return ;
+	}
+
+	if(do_dex_header)
+		process_dex_header();
+
+	if(do_string_ids)
+		process_string_ids();
+
+	if(do_class_defs){
+		do_method_ids = 0;
+		process_class_type();
+	}
+
+	if(do_method_ids)
+		process_method_ids(1);
+
+	if(do_help)
+		usage();
+
+	// process file.
 }
 
 int main(int argc, char **argv)
 {
-#ifndef __TEST__
-	FILE *dex;
 	// print basic program prompt information
 	printf("\n=== %s %s ===\n\n", PROGRAM_NAME, PROGRAM_VER);
+
+	parse_args(argc, argv);
+
+	while(optind < argc)
+		process_file(argv[optind++]);
+
+#if 0
 
 	if(argc < 2){
 		usage();
@@ -968,7 +1124,7 @@ int main(int argc, char **argv)
 	}
 
 	dex = fopen(argv[1], "rb");
-	if(!dex){
+	if(dex == NULL){
 		die("open file %s", argv[1]);
 	}
 
@@ -983,10 +1139,7 @@ int main(int argc, char **argv)
 	//process_annotation(dex);
 	process_class_type(dex);
 	process_field_ids(dex);
-#elif
-	ret_type_test();
 #endif
 
 	return 0;
 }
-
