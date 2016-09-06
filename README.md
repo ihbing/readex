@@ -4,8 +4,6 @@ It's a simple dex file format parser.
 ```
 > make test
  
-./readex Hello.dex
-
 === readex 0.01 ===
 
 Dex Header:
@@ -35,16 +33,13 @@ Dex Header:
 ...
 ...
 ...
-Class:
-name: Hello
-flag: public 
-super: java.lang.Object
-source: Hello.java
-void <init>()
-void main(java.lang.String[])
-Direct Method:
-public constructor void <init>()
-public static void main(java.lang.String[])
-Field:
-java.io.PrintStream out
+Class 0:
+ name: Hello
+ flag: public 
+ super: java.lang.Object
+ source: Hello.java
+ class data: 
+  Direct Method:
+    public constructor void <init>()
+    public static void main(java.lang.String[])
 ```
